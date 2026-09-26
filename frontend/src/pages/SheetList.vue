@@ -20,6 +20,7 @@ import { useSheetStore } from '@/stores/sheetStore'
 import type { RehearsalSheet } from '@/types/sheet'
 import { buildSheetText, cueTotalSeconds, formatDateTime, formatSeconds } from '@/utils/fade'
 import { buildSheetFilename, copyText, downloadTextFile } from '@/utils/export'
+import { EMPTY_SHEET_DIFF, sheetDiffTotal, type SheetDiff } from '@/utils/sheetDiff'
 
 const router = useRouter()
 const message = useMessage()
@@ -45,9 +46,54 @@ const sheets = computed(() =>
   showAllSessions.value ? sheetStore.sheetsSorted : sheetStore.sheetsOfSession(selectedSessionId.value)
 )
 
+/** 每张排演表与当前编排的对照结果；场次已删除的表不参与对照 */
+const sheetDiffs = computed(() => {
+  const map = new Map<string, SheetDiff>()
+  sheetStore.sheets.forEach((sheet) => {
+    if (!sessionStore.sessionById(sheet.sessionId)) return
+    map.set(sheet.id, sheetStore.diffSheet(sheet))
+  })
+  return map
+})
+
+/** 同编号下已有更新版本的排演表 id（旧表保留可对照） */
+const supersededSheetIds = computed(() => {
+  const latestTimeByNo = new Map<string, number>()
+  sheetStore.sheets.forEach((sheet) => {
+    const time = new Date(sheet.generatedAt).getTime()
+    if (time > (latestTimeByNo.get(sheet.sheetNo) ?? Number.NEGATIVE_INFINITY)) latestTimeByNo.set(sheet.sheetNo, time)
+  })
+  return new Set(
+    sheetStore.sheets
+      .filter((sheet) => new Date(sheet.generatedAt).getTime() < (latestTimeByNo.get(sheet.sheetNo) ?? 0))
+      .map((sheet) => sheet.id)
+  )
+})
+
+function diffOf(sheet: RehearsalSheet): SheetDiff {
+  return sheetDiffs.value.get(sheet.id) ?? EMPTY_SHEET_DIFF
+}
+
+function staleTotal(sheet: RehearsalSheet): number {
+  return sheetDiffTotal(diffOf(sheet))
+}
+
+const previewDiff = computed<SheetDiff>(() => (previewSheet.value ? diffOf(previewSheet.value) : EMPTY_SHEET_DIFF))
+const previewStaleTotal = computed(() => sheetDiffTotal(previewDiff.value))
+
+const previewPrevious = computed(() => {
+  const sheet = previewSheet.value
+  if (!sheet?.revisionOf) return null
+  return sheetStore.sheetById(sheet.revisionOf)
+})
+
 const previewText = computed(() => {
   if (!previewSheet.value) return ''
-  return buildSheetText(previewSheet.value, sessionStore.sessionById(previewSheet.value.sessionId) ?? undefined)
+  return buildSheetText(
+    previewSheet.value,
+    sessionStore.sessionById(previewSheet.value.sessionId) ?? undefined,
+    previewPrevious.value
+  )
 })
 
 function handleSessionChange(value: string | number | Array<string | number> | null): void {
@@ -130,6 +176,25 @@ function confirmRemove(sheet: RehearsalSheet): void {
     onPositiveClick: async () => {
       await sheetStore.removeSheet(sheet.id)
       message.success('排演表已删除')
+    }
+  })
+}
+
+function confirmRefresh(sheet: RehearsalSheet): void {
+  const total = staleTotal(sheet)
+  dialog.warning({
+    title: '按当前编排更新',
+    content: `将按当前编排重新生成一份 ${sheet.sheetNo}（沿用原编号与制表备注），对不上的 ${total} 条以现状为准；原来这份保留，可随时翻看对照。`,
+    positiveText: '确认更新',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const created = await sheetStore.refreshSheet(sheet.id)
+      if (!created) {
+        message.error('更新失败：场次已删除或当前没有可用 Cue')
+        return
+      }
+      if (previewSheet.value?.id === sheet.id) previewSheet.value = null
+      message.success(`已按当前编排更新 ${created.sheetNo}，原表保留可对照`)
     }
   })
 }
@@ -238,6 +303,10 @@ function goSessions(): void {
             <div class="sheet-card__head">
               <span class="sheet-card__no mono">{{ sheet.sheetNo }}</span>
               <span class="sheet-card__session">{{ sheetTitle(sheet) }}</span>
+              <NTag v-if="supersededSheetIds.has(sheet.id)" size="tiny" :bordered="false">已有更新版</NTag>
+              <NTag v-if="staleTotal(sheet) > 0" size="tiny" type="warning" :bordered="false">
+                对不上 {{ staleTotal(sheet) }} 条
+              </NTag>
               <span class="toolbar__spacer" />
               <span class="sheet-card__time mono">{{ formatDateTime(sheet.generatedAt) }}</span>
             </div>
@@ -252,6 +321,9 @@ function goSessions(): void {
 
             <div class="sheet-card__actions">
               <NButton size="tiny" @click="previewSheet = sheet">预览</NButton>
+              <NButton v-if="staleTotal(sheet) > 0" size="tiny" type="warning" @click="confirmRefresh(sheet)">
+                按当前编排更新
+              </NButton>
               <NButton size="tiny" quaternary @click="handleCopy(sheet)">复制文本</NButton>
               <NButton size="tiny" quaternary @click="handleDownload(sheet)">下载 .txt</NButton>
               <NButton size="tiny" quaternary type="error" @click="confirmRemove(sheet)">删除</NButton>
@@ -268,10 +340,37 @@ function goSessions(): void {
       class="preview-modal"
       @update:show="(value) => { if (!value) previewSheet = null }"
     >
+      <NAlert v-if="previewSheet && previewStaleTotal > 0" type="warning" :bordered="false" class="preview-diff">
+        <template #header>与当前编排对不上 {{ previewStaleTotal }} 条</template>
+        <div v-if="previewDiff.added.length > 0" class="diff-section">
+          <p class="diff-section__title">后来加的 Cue</p>
+          <p v-for="item in previewDiff.added" :key="item.cueId" class="diff-line">
+            ＋ {{ item.cueNo }}　{{ item.label || '（无提示语）' }}
+          </p>
+        </div>
+        <div v-if="previewDiff.removed.length > 0" class="diff-section">
+          <p class="diff-section__title">被去掉的 Cue</p>
+          <p v-for="item in previewDiff.removed" :key="item.cueId" class="diff-line">
+            － {{ item.cueNo }}　{{ item.label || '（无提示语）' }}
+          </p>
+        </div>
+        <div v-if="previewDiff.changed.length > 0" class="diff-section">
+          <p class="diff-section__title">变过的字段</p>
+          <div v-for="item in previewDiff.changed" :key="item.cueId" class="diff-cue">
+            <p class="diff-line diff-line--cue">{{ item.cueNo }}</p>
+            <p v-for="(change, index) in item.changes" :key="index" class="diff-line diff-line--field">
+              {{ change.label }}：{{ change.from }} → {{ change.to }}
+            </p>
+          </div>
+        </div>
+      </NAlert>
       <pre class="preview-text">{{ previewText }}</pre>
       <template #footer>
         <div class="modal-footer">
           <NButton @click="previewSheet = null">关闭</NButton>
+          <NButton v-if="previewSheet && previewStaleTotal > 0" type="warning" @click="confirmRefresh(previewSheet)">
+            按当前编排更新
+          </NButton>
           <NButton v-if="previewSheet" quaternary @click="handleCopy(previewSheet)">复制文本</NButton>
           <NButton v-if="previewSheet" type="primary" @click="handleDownload(previewSheet)">下载 .txt</NButton>
         </div>
@@ -429,6 +528,39 @@ function goSessions(): void {
 .preview-modal {
   width: 720px;
   max-width: 94vw;
+}
+
+.preview-diff {
+  margin-bottom: 12px;
+}
+
+.diff-section {
+  margin-top: 8px;
+}
+
+.diff-section__title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.diff-cue {
+  margin-top: 4px;
+}
+
+.diff-line {
+  margin: 2px 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-line--cue {
+  font-weight: 600;
+}
+
+.diff-line--field {
+  padding-left: 14px;
+  opacity: 0.85;
 }
 
 .preview-text {

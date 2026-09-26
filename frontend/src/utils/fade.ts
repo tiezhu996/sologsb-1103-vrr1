@@ -164,8 +164,8 @@ function formatCueLineText(line: SheetCueLine, index: number): string[] {
   return rows
 }
 
-/** 排演表纯文本拼装，用于预览、复制与导出 */
-export function buildSheetText(sheet: RehearsalSheet, session?: Session): string {
+/** 排演表纯文本拼装，用于预览、复制与导出；previous 为被本表更新替代的旧表 */
+export function buildSheetText(sheet: RehearsalSheet, session?: Session, previous?: RehearsalSheet | null): string {
   const lines: string[] = []
   lines.push('================ 剧场灯光排演表 ================')
   lines.push(`排演表编号：${sheet.sheetNo}`)
@@ -175,6 +175,9 @@ export function buildSheetText(sheet: RehearsalSheet, session?: Session): string
     if (session.stageNote) lines.push(`舞台状态：${session.stageNote}`)
   }
   lines.push(`生成时间：${formatDateTime(sheet.generatedAt)}`)
+  if (sheet.revisionOf && previous) {
+    lines.push(`更新自：${previous.sheetNo}（生成于 ${formatDateTime(previous.generatedAt)}，原表保留可对照）`)
+  }
   lines.push(`Cue 数量：${sheet.cueLines.length}`)
   if (sheet.note) lines.push(`制表备注：${sheet.note}`)
   lines.push('')

@@ -41,6 +41,8 @@ export interface RehearsalSheet {
   note: string
   /** 生成时的条目快照 */
   cueLines: SheetCueLine[]
+  /** 若本表由旧表「按当前编排更新」而来，指向被替代的那一张（原表保留可对照） */
+  revisionOf?: string
 }
 
 /** 生成排演表时提交的字段集合 */
