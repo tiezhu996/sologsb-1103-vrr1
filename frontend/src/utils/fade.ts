@@ -168,7 +168,8 @@ function formatCueLineText(line: SheetCueLine, index: number): string[] {
 export function buildSheetText(sheet: RehearsalSheet, session?: Session): string {
   const lines: string[] = []
   lines.push('================ 剧场灯光排演表 ================')
-  lines.push(`排演表编号：${sheet.sheetNo}`)
+  const version = sheet.version ?? 1
+  lines.push(`排演表编号：${sheet.sheetNo}${version > 1 ? `（v${version}）` : ''}`)
   lines.push(`场次：${session ? `${session.order}. ${session.title}` : '（场次已删除）'}`)
   if (session) {
     lines.push(`剧本页码：${session.scriptPage || '—'}    计划时刻：${session.plannedStart || '—'} ~ ${session.plannedEnd || '—'}`)

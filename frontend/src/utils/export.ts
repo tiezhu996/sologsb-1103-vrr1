@@ -13,13 +13,14 @@ export function downloadTextFile(filename: string, text: string): void {
 }
 
 /** 由排演表编号与生成时间拼出导出文件名 */
-export function buildSheetFilename(sheetNo: string, generatedAt: string): string {
+export function buildSheetFilename(sheetNo: string, generatedAt: string, version = 1): string {
   const date = new Date(generatedAt)
   const stamp = Number.isNaN(date.getTime())
     ? generatedAt.replace(/[^\d]/g, '').slice(0, 14)
     : `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
   const safeNo = sheetNo.replace(/[^\w-]/g, '_')
-  return `排演表_${safeNo}_${stamp}.txt`
+  const suffix = version > 1 ? `_v${version}` : ''
+  return `排演表_${safeNo}${suffix}_${stamp}.txt`
 }
 
 /** 复制文本到剪贴板，失败时回退到 execCommand */
